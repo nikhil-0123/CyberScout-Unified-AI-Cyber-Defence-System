@@ -97,9 +97,13 @@ client = None
 _memory_users = {}
 
 try:
-    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2500)
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     client.admin.command('ping')
-    db = client.get_database() if client.get_database().name != 'test' else client['phishing_detector']
+    try:
+        default_db = client.get_default_database()
+        db = default_db if default_db.name not in ('test', 'admin') else client['phishing_detector']
+    except Exception:
+        db = client['phishing_detector']
     history_collection = db['scan_history']
     blocklist_collection = db['blocklist']
     users_collection = db['users']
