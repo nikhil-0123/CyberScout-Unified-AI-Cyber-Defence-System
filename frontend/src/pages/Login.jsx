@@ -18,12 +18,15 @@ const Login = () => {
 
         try {
             const res = await loginUser(formData.email, formData.password);
-            const { access_token, refresh_token, user } = res.data;
+            const { access_token, user } = res.data;
 
+            // Only store short-lived access token and display identity in localStorage
+            // Refresh token is maintained strictly in secure HTTP-only cookies
             localStorage.setItem('cyberscout_access_token', access_token);
-            localStorage.setItem('cyberscout_refresh_token', refresh_token);
             localStorage.setItem('cyberscout_currentUser', JSON.stringify(user));
             localStorage.setItem('phishguard_currentUser', JSON.stringify(user));
+            localStorage.removeItem('cyberscout_refresh_token');
+            localStorage.removeItem('phishguard_refresh_token');
 
             navigate('/dashboard');
         } catch (err) {

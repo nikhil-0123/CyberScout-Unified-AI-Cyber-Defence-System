@@ -1,19 +1,19 @@
 """
 Authentication and Authorization Module for CyberScout.
 Implements Argon2id password hashing, RFC 7519 compliant JWTs,
-role-based access control (RBAC), and token rotation.
+role-based access control (RBAC), secure HTTP-only cookies, and CSRF protection.
 """
 
 import os
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHashError
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # Initialize Argon2id password hasher with secure parameters (RFC 9106 recommended)
@@ -26,12 +26,70 @@ ph = PasswordHasher(
     salt_len=16
 )
 
-# JWT Configuration
-JWT_SECRET = os.getenv("JWT_SECRET")
-if not JWT_SECRET or len(JWT_SECRET) < 32:
-    # Ensure development has a persistent-per-process fallback if not set in .env
-    # In production, this should always be explicitly set
-    JWT_SECRET = os.getenv("JWT_SECRET", "cyberscout_production_super_secure_jwt_secret_key_minimum_32_bytes_2026")
+# Known weak/placeholder secrets that must NEVER be used in production
+INSECURE_SECRETS = {
+    "cyberscout_production_super_secure_jwt_secret_key_minimum_32_bytes_2026",
+    "replace_with_a_cryptographically_secure_random_32_plus_character_secret_e_g_openssl_rand_hex_32",
+    "your_minimum_32_char_cryptographically_secure_random_key_here",
+    "secret", "supersecret", "changeme", "12345678901234567890123456789012"
+}
+
+_DYNAMIC_DEV_SECRET: Optional[str] = None
+
+def get_jwt_secret() -> str:
+    """
+    Retrieves and validates the JWT secret.
+    In production: strictly enforces non-empty, strong (>=32 char), non-default key.
+    In development: allows configured key or securely generates an in-memory session key.
+    """
+    global _DYNAMIC_DEV_SECRET
+    env = os.getenv("ENVIRONMENT", os.getenv("NODE_ENV", "development")).lower()
+    is_prod = env in ("production", "prod")
+    secret = os.getenv("JWT_SECRET", "").strip()
+
+    if is_prod:
+        if not secret:
+            raise RuntimeError(
+                "CRITICAL SECURITY FATAL: JWT_SECRET environment variable is not configured. "
+                "Production startup aborted. Set a cryptographically secure 32+ character JWT_SECRET."
+            )
+        if len(secret) < 32:
+            raise RuntimeError(
+                f"CRITICAL SECURITY FATAL: Configured JWT_SECRET is too short ({len(secret)} chars). "
+                "Production requires at least 32 characters."
+            )
+        if secret in INSECURE_SECRETS:
+            raise RuntimeError(
+                "CRITICAL SECURITY FATAL: JWT_SECRET matches a known public placeholder or default value. "
+                "Production requires a unique randomly generated key (e.g., via 'openssl rand -hex 32')."
+            )
+        return secret
+
+    # Development mode handling
+    if secret and len(secret) >= 32 and secret not in INSECURE_SECRETS:
+        return secret
+
+    if _DYNAMIC_DEV_SECRET is None:
+        _DYNAMIC_DEV_SECRET = secrets.token_urlsafe(32)
+        print("SECURITY NOTICE: Development environment active without explicit JWT_SECRET. Generated dynamic session key.")
+    return _DYNAMIC_DEV_SECRET
+
+def validate_production_security_config() -> None:
+    """
+    Validates security constraints at application startup.
+    Fails startup with RuntimeError if any production security invariant is violated.
+    """
+    env = os.getenv("ENVIRONMENT", os.getenv("NODE_ENV", "development")).lower()
+    if env in ("production", "prod"):
+        # Enforce JWT_SECRET strength
+        get_jwt_secret()
+
+        # Enforce CORS configuration sanity
+        cors_env = os.getenv("CORS_ORIGINS", "")
+        if "*" in [o.strip() for o in cors_env.split(",")]:
+            raise RuntimeError(
+                "CRITICAL SECURITY FATAL: Wildcard CORS origin '*' is not allowed when credentials are enabled in production."
+            )
 
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
@@ -96,7 +154,7 @@ def create_access_token(user_id: str, email: str, role: str = "analyst") -> str:
         "iat": int(now.timestamp()),
         "exp": int(expire.timestamp())
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
 def create_refresh_token(user_id: str) -> tuple[str, str, datetime]:
     """
@@ -113,7 +171,7 @@ def create_refresh_token(user_id: str) -> tuple[str, str, datetime]:
         "iat": int(now.timestamp()),
         "exp": int(expire.timestamp())
     }
-    token_str = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    token_str = jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
     return token_str, jti, expire
 
 def decode_token(token: str, expected_type: str = "access") -> Dict[str, Any]:
@@ -122,7 +180,7 @@ def decode_token(token: str, expected_type: str = "access") -> Dict[str, Any]:
     Raises HTTPException(401) on failure.
     """
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
         if payload.get("type") != expected_type:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -140,8 +198,55 @@ def decode_token(token: str, expected_type: str = "access") -> Dict[str, Any]:
             detail=f"Invalid authentication token: {str(e)}"
         )
 
-# Dependency Factory to resolve user from MongoDB
-def get_auth_dependency(users_collection):
+# --- Cross-Domain Cookie & CSRF Utilities (Cloudflare Pages <-> Render API) ---
+
+def create_csrf_token() -> str:
+    """Generates a high-entropy CSRF protection token."""
+    return secrets.token_urlsafe(32)
+
+def verify_csrf_token(client_token: Optional[str], expected_token: Optional[str]) -> bool:
+    """Verifies CSRF token matching using constant-time comparison."""
+    if not client_token or not expected_token:
+        return False
+    return secrets.compare_digest(client_token, expected_token)
+
+def get_cookie_configuration(request: Optional[Request] = None) -> Dict[str, Any]:
+    """
+    Calculates secure cookie parameters.
+    Supports cross-domain Cloudflare Pages -> Render API via SameSite=None and Secure=True.
+    Falls back to Lax / non-secure for local HTTP testing if not over HTTPS.
+    """
+    env = os.getenv("ENVIRONMENT", os.getenv("NODE_ENV", "development")).lower()
+    is_prod = env in ("production", "prod")
+
+    # Determine if current request or environment uses TLS/HTTPS
+    is_https = is_prod or os.getenv("SECURE_COOKIES", "false").lower() == "true"
+    if request:
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme).lower()
+        if proto == "https":
+            is_https = True
+
+    if is_https:
+        # Cross-site Cloudflare Pages <-> Render API requires SameSite=None + Secure=True
+        return {
+            "secure": True,
+            "samesite": "none",
+            "httponly": True,
+            "path": "/api/auth",
+            "max_age": REFRESH_TOKEN_EXPIRE_DAYS * 86400
+        }
+    else:
+        # Local development on HTTP
+        return {
+            "secure": False,
+            "samesite": "lax",
+            "httponly": True,
+            "path": "/api/auth",
+            "max_age": REFRESH_TOKEN_EXPIRE_DAYS * 86400
+        }
+
+# Dependency Factory to resolve user from MongoDB or memory
+def get_auth_dependency(users_collection, memory_users: Optional[Dict[str, Any]] = None):
     """Factory creating FastAPI dependencies bound to the active MongoDB users collection."""
 
     def get_current_user_optional(
@@ -153,10 +258,14 @@ def get_auth_dependency(users_collection):
         try:
             payload = decode_token(token, expected_type="access")
             user_id = payload.get("sub")
-            if not user_id or users_collection is None:
+            if not user_id:
                 return None
-            user = users_collection.find_one({"id": user_id})
-            return user
+            if users_collection is not None:
+                user = users_collection.find_one({"id": user_id})
+                return user
+            if memory_users is not None:
+                return next((u for u in memory_users.values() if u.get("id") == user_id), None)
+            return {"id": user_id, "email": payload.get("email"), "role": payload.get("role", "analyst")}
         except Exception:
             return None
 
@@ -171,23 +280,29 @@ def get_auth_dependency(users_collection):
             )
         payload = decode_token(credentials.credentials, expected_type="access")
         user_id = payload.get("sub")
-        if not user_id or users_collection is None:
+        if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found or database service unavailable."
+                detail="Malformed token: missing subject identity."
             )
-        user = users_collection.find_one({"id": user_id})
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User account associated with this token no longer exists."
-            )
-        if not user.get("is_active", True):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User account has been disabled."
-            )
-        return user
+        if users_collection is not None:
+            user = users_collection.find_one({"id": user_id})
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User account associated with this token no longer exists."
+                )
+            if not user.get("is_active", True):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="User account has been disabled."
+                )
+            return user
+        if memory_users is not None:
+            user = next((u for u in memory_users.values() if u.get("id") == user_id), None)
+            if user:
+                return user
+        return {"id": user_id, "email": payload.get("email"), "role": payload.get("role", "analyst"), "is_active": True}
 
     def require_admin(
         user: Dict[str, Any] = Depends(require_current_user)

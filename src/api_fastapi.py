@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Request, status
+from fastapi import FastAPI, HTTPException, Depends, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import pandas as pd
@@ -9,14 +9,16 @@ import numpy as np
 import joblib
 from urllib.parse import urlparse
 from datetime import datetime, timezone
+from typing import Optional, Dict, Any, List
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Feature Flags
+# Feature Flags & Environment
 ENABLE_EMAIL_ANALYSIS = os.getenv("ENABLE_EMAIL_ANALYSIS", "true").lower() == "true"
-REQUIRE_AUTH = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
+ENVIRONMENT = os.getenv("ENVIRONMENT", os.getenv("NODE_ENV", "development")).lower()
+IS_PRODUCTION = ENVIRONMENT in ("production", "prod")
 
 from .analysis_engine import (
     fetch_live_html, extract_suspicious_snippets, analyze_phishing,
@@ -24,10 +26,11 @@ from .analysis_engine import (
 )
 from .feature_url import extract_url_features
 from .security import (
-    validate_safe_url, safe_fetch_html,
+    validate_safe_url, safe_fetch_html, is_ip_blocked,
     hash_password, verify_password, validate_password_policy,
     create_access_token, create_refresh_token, decode_token,
-    get_auth_dependency,
+    get_auth_dependency, validate_production_security_config,
+    create_csrf_token, verify_csrf_token, get_cookie_configuration,
     auth_rate_limiter, scan_rate_limiter, general_rate_limiter,
     RiskLevel, PolicyAction, is_domain_trusted, evaluate_threat_policy
 )
@@ -45,13 +48,16 @@ except Exception as e:
 import warnings
 warnings.filterwarnings("ignore")
 
+# 1. Enforce Production Security Invariants (JWT secret strength, CORS sanity)
+validate_production_security_config()
+
 app = FastAPI(
     title="CyberScout Unified AI Cyber Defence API",
     description="Production-grade AI threat detection, forensics, SSRF protection and security operations API",
     version="2.0.0"
 )
 
-# Secure CORS configuration (explicit origin allowlisting, no wildcard * with credentials)
+# 2. CORS Configuration (Explicit origin allowlisting, no wildcard * with credentials)
 cors_env = os.getenv("CORS_ORIGINS", "")
 if cors_env:
     allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
@@ -63,19 +69,28 @@ else:
         "http://127.0.0.1:3000"
     ]
 
+# Fail startup if wildcard CORS is attempted with credentials
+if "*" in allowed_origins:
+    if IS_PRODUCTION:
+        raise RuntimeError("CRITICAL SECURITY FATAL: Wildcard CORS origin '*' cannot be used with credentials in production.")
+    allowed_origins = [o for o in allowed_origins if o != "*"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"^(chrome-extension://[a-z]{32}|http://localhost:[0-9]+|http://127\.0\.0\.1:[0-9]+)$",
+    allow_origin_regex=r"^(chrome-extension://[a-z]{32}|http://localhost:[0-9]+|http://127\.0\.0\.1:[0-9]+|https://[a-zA-Z0-9-]+\.pages\.dev)$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# --- MongoDB Configuration ---
+# 3. MongoDB Configuration
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+client = None
+_memory_users = {}
+
 try:
-    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2500)
     client.admin.command('ping')
     db = client.get_database() if client.get_database().name != 'test' else client['phishing_detector']
     history_collection = db['scan_history']
@@ -94,13 +109,29 @@ try:
 
     print("Connected to MongoDB successfully with secure collections initialized!")
 except Exception as e:
-    print(f"CRITICAL: MongoDB is NOT running at {MONGO_URI}. Fallback in-memory/simulated mode.")
+    if IS_PRODUCTION:
+        raise RuntimeError(
+            f"CRITICAL FATAL: MongoDB is unavailable at {MONGO_URI}. "
+            f"Production requires a connected, authenticated database instance. Startup aborted. Error: {e}"
+        )
+    print(f"CRITICAL: MongoDB is NOT running at {MONGO_URI}. Fallback in-memory development mode active.")
+    client = None
     history_collection = None
     blocklist_collection = None
     users_collection = None
 
-# Initialize RBAC dependencies bound to MongoDB users collection
-get_current_user_optional, require_current_user, require_admin = get_auth_dependency(users_collection)
+# Initialize RBAC dependencies bound to MongoDB users collection or development memory
+get_current_user_optional, require_current_user, require_admin = get_auth_dependency(users_collection, _memory_users)
+
+def is_database_healthy() -> bool:
+    """Checks live database connectivity."""
+    if client is None:
+        return False
+    try:
+        client.admin.command('ping')
+        return True
+    except Exception:
+        return False
 
 # DATA FLOW: URL → HTML Fetch → Analysis → Unified Risk Score → Auto Blocklist → Extension Enforcement
 
@@ -113,10 +144,10 @@ def log_to_db(type, input, prediction, score, reasons, user_id=None):
                 "prediction": prediction,
                 "risk_score": score,
                 "reasons": reasons,
-                "timestamp": datetime.utcnow()
+                "timestamp": datetime.now(timezone.utc)
             }
             if user_id:
-                doc["user_id"] = user_id
+                doc["user_id"] = str(user_id)
                 
             history_collection.insert_one(doc)
         except Exception as e:
@@ -126,14 +157,14 @@ class PredictionRequest(BaseModel):
     url: str
     email_text: str = ""
     html: str = ""
-    user_id: str = None
+    user_id: Optional[str] = None
 
 class URLRequest(BaseModel):
     url: str
 
 class EmailRequest(BaseModel):
     email_text: str
-    user_id: str = None
+    user_id: Optional[str] = None
 
 class RegisterRequest(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
@@ -145,7 +176,7 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=1, max_length=128)
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: Optional[str] = None
 
 # Load URL Random Forest model (Rule-based features)
 model_path = "model/rf_model.pkl"
@@ -178,194 +209,87 @@ if os.path.exists(model_path):
                     bg_values = background_data.values
                 else:
                     bg_values = background_data
-                    
                 explainer_lime = lime.lime_tabular.LimeTabularExplainer(
-                    bg_values,
-                    mode='classification',
+                    training_data=np.array(bg_values),
                     feature_names=feature_names,
-                    class_names=['Legitimate', 'Phishing'],
-                    discretize_continuous=True
+                    class_names=["Legitimate", "Phishing"],
+                    mode="classification"
                 )
-            print("Explainable AI engines checked.")
     except Exception as e:
-        print(f"Failed to load ML artifacts: {e}")
+        print(f"Error loading model or explainers: {e}")
         model = None
 else:
-    print(f"Warning: URL model not found at {model_path}")
-    model = None
+    print(f"Model file not found at {model_path}. Using rule-based fallback.")
 
-# Load Pretrained Email ML Model
-email_model_path = "model/phishing_detector.pkl"
-try:
+# Load Email Model if enabled
+email_ml_model = None
+if ENABLE_EMAIL_ANALYSIS:
+    email_model_path = "model/phishing_detector.pkl"
     if os.path.exists(email_model_path):
-        with open(email_model_path, "rb") as f:
-            email_ml_model = pickle.load(f)
-        print(f"Pretrained Email ML Model loaded successfully from {email_model_path}!")
+        try:
+            email_ml_model = joblib.load(email_model_path)
+            print(f"Email ML Model loaded from {email_model_path}")
+        except Exception as e:
+            print(f"Error loading email ML model: {e}")
     else:
-        print(f"Warning: Email ML model not found at {email_model_path}")
-        email_ml_model = None
-except Exception as e:
-    print(f"Warning: Could not load pretrained email model from {email_model_path}: {e}")
-    # Fallback to joblib if pickle fails (compatibility)
-    try:
-        email_ml_model = joblib.load(email_model_path)
-        print("Loaded with joblib fallback.")
-    except:
-        email_ml_model = None
+        print(f"Email model file not found at {email_model_path}")
 
 def simple_url_features(url):
-    """Enhanced phishing detection using multiple heuristics"""
-    try:
-        url_lower = url.lower()
-        parsed = urlparse(url_lower)
-        domain = parsed.netloc
-        path = parsed.path
+    """Fallback rule-based heuristic check for URLs."""
+    risk_score = 0
+    if not url:
+        return risk_score
         
-        risk_score = 0
+    url_lower = url.lower()
+    
+    # Check for IP address in URL
+    import re
+    if re.search(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', url):
+        risk_score += 2
         
-        # 1. Suspicious keywords (banking, payment, verification)
-        suspicious_keywords = [
-            'paypal', 'bank', 'signin', 'login', 'verify', 'account', 
-            'secure', 'update', 'confirm', 'password', 'billing', 'ebay',
-            'amazon', 'apple', 'microsoft', 'google', 'facebook', 'netflix',
-            'suspended', 'locked', 'unusual', 'alert', 'support-help'
-        ]
-        keyword_matches = sum(1 for word in suspicious_keywords if word in url_lower)
-        if keyword_matches >= 2:
-            risk_score += 3
-        elif keyword_matches == 1:
+    # Check length
+    if len(url) > 75:
+        risk_score += 1
+        
+    # Check suspicious keywords
+    suspicious_words = ['secure', 'account', 'update', 'login', 'verify', 'banking', 'signin', 'support']
+    for word in suspicious_words:
+        if word in url_lower:
             risk_score += 1
+            break
             
-        # 2. Multiple domains in path (e.g., example.com/realbank.com/)
-        if '/' in path and any(tld in path for tld in ['.com', '.net', '.org', '.co.uk', '.co.nz']):
-            risk_score += 3
-            
-        # 3. IP address in URL
-        ip_pattern = domain.replace('.', '').replace(':', '')
-        if ip_pattern.isdigit() or any(c.isdigit() for c in domain.split('.')[0] if len(domain.split('.')[0]) > 0):
-            if sum(c.isdigit() for c in domain) > len(domain) * 0.3:
-                risk_score += 2
-                
-        # 4. Excessive subdomains
-        subdomain_count = domain.count('.')
-        if subdomain_count > 3:
-            risk_score += 2
-        elif subdomain_count > 2:
-            risk_score += 1
-            
-        # 5. Suspicious TLDs
-        suspicious_tlds = ['.tk', '.ml', '.ga', '.cf', '.gq', '.xyz', '.top', '.work', '.click', '.link']
-        if any(url_lower.endswith(tld) for tld in suspicious_tlds):
-            risk_score += 2
-            
-        # 6. Excessive hyphens
-        if domain.count('-') >= 3:
-            risk_score += 2
-        elif domain.count('-') >= 2:
-            risk_score += 1
-            
-        # 7. Long URL
-        if len(url) > 100:
-            risk_score += 2
-        elif len(url) > 75:
-            risk_score += 1
-            
-        # 8. @ symbol in URL (often used in phishing)
-        if '@' in url:
-            risk_score += 3
-            
-        # 9. HTTPS but suspicious domain
-        if url_lower.startswith('http://') and any(word in url_lower for word in ['secure', 'banking', 'paypal']):
-            risk_score += 2
-            
-        # 10. Unusual port numbers
-        if ':' in domain and any(port in domain for port in [':8080', ':8000', ':3000', ':5000']):
-            risk_score += 1
-            
-        # 11. Blogspot, free hosting in financial context
-        free_hosts = ['blogspot', 'wordpress', 'wixsite', 'weebly', 'tripod']
-        if any(host in domain for host in free_hosts):
-            if any(word in url_lower for word in ['paypal', 'bank', 'secure', 'account']):
-                risk_score += 3
-                
-        # 12. Suspicious patterns
-        if 'limited' in domain and any(num.isdigit() for num in domain):
-            risk_score += 2
-            
-        # Classification threshold
-        return 1 if risk_score >= 3 else 0
-    except Exception as e:
-        print(f"Error in url analysis: {e}")
-        return 0
+    # Check special characters
+    if url.count('@') > 0 or url.count('-') > 3:
+        risk_score += 1
+        
+    return 1 if risk_score >= 2 else 0
 
 def analyze_text_content(text):
-    """Analyze email/text content for phishing indicators"""
-    if not text or len(text) < 10:
+    """Analyzes text for typical spam/phishing keywords."""
+    if not text:
         return 0
-        
     text_lower = text.lower()
-    risk_score = 0
-    
-    # Spam/phishing keywords
-    spam_keywords = [
-        'urgent', 'winner', 'congratulations', 'free money', 'lottery', 
-        'viagra', 'cialis', 'weight loss', 'enlarge', 'click here',
-        'act now', 'limited time', 'expire', 'suspended account',
-        'verify your account', 'confirm your identity', 'unusual activity',
-        'security alert', 'your account will be closed', 'reset password',
-        'prize', 'million dollars', 'inheritance', 'beneficiary',
-        'toll-free', 'call now', 'click below', 'update payment'
+    suspicious_phrases = [
+        'urgent', 'act immediately', 'account suspended', 'verify your identity',
+        'click here', 'reset password', 'wire transfer', 'cryptocurrency', 'winner'
     ]
-    
-    keyword_count = sum(1 for word in spam_keywords if word in text_lower)
-    if keyword_count >= 3:
-        risk_score += 3
-    elif keyword_count >= 2:
-        risk_score += 2
-    elif keyword_count == 1:
-        risk_score += 1
-        
-    # Excessive exclamation marks
-    if text.count('!') > 3:
-        risk_score += 1
-        
-    # ALL CAPS text (common in spam)
-    words = text.split()
-    caps_words = sum(1 for w in words if len(w) > 3 and w.isupper())
-    if caps_words > len(words) * 0.3:
-        risk_score += 2
-        
-    return risk_score
+    matches = sum(1 for phrase in suspicious_phrases if phrase in text_lower)
+    return matches
 
 def analyze_html_content(html):
-    """Analyze HTML content for phishing indicators"""
-    if not html or len(html) < 10:
+    """Parses HTML to find hidden forms, fake inputs, and suspicious scripts."""
+    if not html:
         return 0, False
-        
     html_lower = html.lower()
     risk_score = 0
-    has_password_field = False
     
-    # Check for password input fields (CRITICAL - immediate phishing indicator)
-    if 'type=\'password\'' in html_lower or 'type="password"' in html_lower or 'password' in html_lower:
-        risk_score += 10  # Very high score
-        has_password_field = True
-        
-    # Check for forms
-    if '<form' in html_lower:
+    # Password field detection
+    has_password_field = 'type="password"' in html_lower or "type='password'" in html_lower or "password" in html_lower
+    if has_password_field:
         risk_score += 1
         
-    # Check for iframes (can be used to hide content)
-    if '<iframe' in html_lower:
-        risk_score += 2
-        
-    # Suspicious form actions
-    suspicious_actions = ['submit', 'login', 'signin', 'verify', 'update']
-    if any(action in html_lower for action in suspicious_actions):
-        risk_score += 1
-        
-    # Hidden inputs (can be malicious)
-    if 'type="hidden"' in html_lower or "type='hidden'" in html_lower:
+    # Form action to external/IP
+    if '<form' in html_lower and 'action=' in html_lower:
         risk_score += 1
         
     # JavaScript suspicious patterns
@@ -375,22 +299,43 @@ def analyze_html_content(html):
             
     return risk_score, has_password_field
 
+# --- Health Check Endpoints ---
+
 @app.get("/")
 def root():
+    db_healthy = is_database_healthy()
+    if IS_PRODUCTION and not db_healthy:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "status": "UNHEALTHY",
+                "database": "DISCONNECTED",
+                "error": "Required MongoDB service is unavailable in production."
+            }
+        )
     return {
-        "status": "API is running", 
+        "status": "API is running",
+        "environment": ENVIRONMENT,
+        "database": "connected" if db_healthy else "in_memory_dev",
         "model_loaded": model is not None,
         "features": {
             "email_analysis": ENABLE_EMAIL_ANALYSIS
         }
     }
 
+@app.get("/api/health")
+def api_health():
+    return root()
+
 @app.post("/predict", dependencies=[Depends(scan_rate_limiter)])
-def predict(data: PredictionRequest):
+def predict(
+    data: PredictionRequest,
+    current_user: Optional[dict] = Depends(get_current_user_optional)
+):
     try:
-        # SSRF Protection (inspect scheme and forbidden IP literals)
+        # SSRF Protection
         if data.url:
-            is_safe, ssrf_reason = validate_safe_url(data.url, skip_dns_check=True)
+            is_safe, ssrf_reason, _ = validate_safe_url(data.url, skip_dns_check=True)
             if not is_safe:
                 raise HTTPException(status_code=400, detail=f"SSRF Security Violation: {ssrf_reason}")
 
@@ -410,8 +355,6 @@ def predict(data: PredictionRequest):
         text_risk = analyze_text_content(data.email_text)
         html_risk, has_password = analyze_html_content(data.html)
 
-        # Multi-signal evaluation using Threat Policy (Decision 3)
-        # Avoids single-signal false positive where a password input alone flags legitimate sites
         ml_pred_str = "phishing" if url_risk == 1 else "legitimate"
         ml_conf = 0.85 if url_risk == 1 else 0.80
 
@@ -426,7 +369,9 @@ def predict(data: PredictionRequest):
         )
 
         result = policy["prediction"]
-        log_to_db("predict_v2", data.url, result, policy["risk_score"], policy["audit_reasons"], user_id=data.user_id)
+        # Derive user_id from server-side authenticated token
+        authenticated_user_id = current_user["id"] if current_user else None
+        log_to_db("predict_v2", data.url, result, policy["risk_score"], policy["audit_reasons"], user_id=authenticated_user_id)
 
         return {
             "prediction": result,
@@ -443,25 +388,21 @@ def predict(data: PredictionRequest):
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
 
 # ============================================================================
-# --- PHASE 2: AUTHENTICATION & ACCESS CONTROL ENDPOINTS (Argon2id + JWT) ---
+# --- AUTHENTICATION & ACCESS CONTROL ENDPOINTS (Argon2id + HTTP-Only Cookie) ---
 # ============================================================================
 
-# In-memory user fallback when MongoDB service is unreachable
-_memory_users = {}
-
 @app.post("/api/auth/register", dependencies=[Depends(auth_rate_limiter)])
-def auth_register(data: RegisterRequest):
+def auth_register(data: RegisterRequest, request: Request, response: Response):
     """
-    Registers a new security user with Argon2id password hashing and policy enforcement.
+    Registers a new security user with Argon2id password hashing,
+    sets secure HTTP-only refresh cookie, and issues CSRF token.
     """
-    # 1. Validate password policy
     is_valid, msg = validate_password_policy(data.password)
     if not is_valid:
         raise HTTPException(status_code=400, detail=msg)
 
     email_clean = data.email.lower().strip()
 
-    # 2. Check if user already exists
     if users_collection is not None:
         if users_collection.find_one({"email": email_clean}):
             raise HTTPException(status_code=409, detail="Conflict Detected: User profile already exists.")
@@ -471,7 +412,6 @@ def auth_register(data: RegisterRequest):
             raise HTTPException(status_code=409, detail="Conflict Detected: User profile already exists.")
         user_count = len(_memory_users)
 
-    # First registered user is automatically assigned Admin role; subsequent users are Analysts
     role = "admin" if user_count == 0 else "analyst"
     user_id = str(uuid.uuid4())
     pw_hash = hash_password(data.password)
@@ -496,10 +436,30 @@ def auth_register(data: RegisterRequest):
     else:
         _memory_users[email_clean] = user_doc
 
+    # Set secure HTTP-only refresh cookie and CSRF cookie
+    cookie_params = get_cookie_configuration(request)
+    csrf_token = create_csrf_token()
+
+    response.set_cookie(
+        key="cyberscout_refresh_token",
+        value=refresh_token,
+        **cookie_params
+    )
+    response.set_cookie(
+        key="cyberscout_csrf_token",
+        value=csrf_token,
+        path="/",
+        secure=cookie_params["secure"],
+        samesite=cookie_params["samesite"],
+        max_age=cookie_params["max_age"],
+        httponly=False
+    )
+
     return {
         "access_token": access_token,
-        "refresh_token": refresh_token,
+        "refresh_token": refresh_token, # preserved for non-browser/CLI clients
         "token_type": "bearer",
+        "csrf_token": csrf_token,
         "user": {
             "id": user_id,
             "name": data.name.strip(),
@@ -509,9 +469,10 @@ def auth_register(data: RegisterRequest):
     }
 
 @app.post("/api/auth/login", dependencies=[Depends(auth_rate_limiter)])
-def auth_login(data: LoginRequest):
+def auth_login(data: LoginRequest, request: Request, response: Response):
     """
-    Authenticates a user against Argon2id hash and issues JWT access/refresh tokens.
+    Authenticates user against Argon2id hash, sets secure HTTP-only refresh cookie,
+    and returns short-lived access token with CSRF token.
     """
     email_clean = data.email.lower().strip()
 
@@ -544,10 +505,30 @@ def auth_login(data: LoginRequest):
     else:
         user["refresh_tokens"] = active_tokens
 
+    # Set secure HTTP-only refresh cookie and CSRF cookie
+    cookie_params = get_cookie_configuration(request)
+    csrf_token = create_csrf_token()
+
+    response.set_cookie(
+        key="cyberscout_refresh_token",
+        value=refresh_token,
+        **cookie_params
+    )
+    response.set_cookie(
+        key="cyberscout_csrf_token",
+        value=csrf_token,
+        path="/",
+        secure=cookie_params["secure"],
+        samesite=cookie_params["samesite"],
+        max_age=cookie_params["max_age"],
+        httponly=False
+    )
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
+        "csrf_token": csrf_token,
         "user": {
             "id": user["id"],
             "name": user["name"],
@@ -557,11 +538,46 @@ def auth_login(data: LoginRequest):
     }
 
 @app.post("/api/auth/refresh")
-def auth_refresh(data: RefreshRequest):
+def auth_refresh(
+    request: Request,
+    response: Response,
+    data: Optional[RefreshRequest] = None
+):
     """
     Rotates access token using a valid, unrevoked refresh token.
+    Supports secure HTTP-only cookies with CSRF defense, as well as body fallback.
     """
-    payload = decode_token(data.refresh_token, expected_type="refresh")
+    token_str = None
+    from_cookie = False
+
+    # Check HTTP-only cookie first
+    cookie_token = request.cookies.get("cyberscout_refresh_token")
+    if cookie_token:
+        token_str = cookie_token
+        from_cookie = True
+    elif data and data.refresh_token:
+        token_str = data.refresh_token
+
+    if not token_str:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing refresh token. Please authenticate."
+        )
+
+    # CSRF Verification if using cookie
+    if from_cookie:
+        client_csrf = request.headers.get("x-csrf-token")
+        cookie_csrf = request.cookies.get("cyberscout_csrf_token")
+        x_requested_with = request.headers.get("x-requested-with", "").lower()
+        
+        csrf_ok = verify_csrf_token(client_csrf, cookie_csrf) if (client_csrf and cookie_csrf) else False
+        if not csrf_ok and x_requested_with != "xmlhttprequest":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="CSRF Protection: Missing or invalid CSRF verification token."
+            )
+
+    payload = decode_token(token_str, expected_type="refresh")
     user_id = payload.get("sub")
     jti = payload.get("jti")
 
@@ -578,9 +594,30 @@ def auth_refresh(data: RefreshRequest):
         email=user["email"],
         role=user.get("role", "analyst")
     )
+    new_refresh_token, new_jti, exp = create_refresh_token(user_id=user["id"])
+
+    # Rotate token in persistence
+    active_tokens = [t for t in user.get("refresh_tokens", []) if t != jti]
+    active_tokens.append(new_jti)
+    if len(active_tokens) > 5:
+        active_tokens = active_tokens[-5:]
+
+    if users_collection is not None:
+        users_collection.update_one({"id": user["id"]}, {"$set": {"refresh_tokens": active_tokens}})
+    else:
+        user["refresh_tokens"] = active_tokens
+
+    # Set rotated refresh cookie
+    cookie_params = get_cookie_configuration(request)
+    response.set_cookie(
+        key="cyberscout_refresh_token",
+        value=new_refresh_token,
+        **cookie_params
+    )
 
     return {
         "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
         "token_type": "bearer"
     }
 
@@ -598,32 +635,47 @@ def auth_me(user: dict = Depends(require_current_user)):
 
 @app.post("/api/auth/logout")
 def auth_logout(
-    data: RefreshRequest = None,
-    user: dict = Depends(get_current_user_optional)
+    request: Request,
+    response: Response,
+    data: Optional[RefreshRequest] = None,
+    user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """
-    Revokes the provided refresh token.
+    Revokes refresh token and clears session cookies.
     """
-    if user and data and data.refresh_token:
+    token_str = request.cookies.get("cyberscout_refresh_token") or (data.refresh_token if data else None)
+    if token_str:
         try:
-            payload = decode_token(data.refresh_token, expected_type="refresh")
+            payload = decode_token(token_str, expected_type="refresh")
             jti = payload.get("jti")
+            uid = payload.get("sub")
             if users_collection is not None:
-                users_collection.update_one(
-                    {"id": user["id"]},
-                    {"$pull": {"refresh_tokens": jti}}
-                )
-            else:
+                users_collection.update_one({"id": uid}, {"$pull": {"refresh_tokens": jti}})
+            elif user:
                 user["refresh_tokens"] = [t for t in user.get("refresh_tokens", []) if t != jti]
         except Exception:
             pass
+
+    cookie_params = get_cookie_configuration(request)
+    response.delete_cookie(
+        key="cyberscout_refresh_token",
+        path="/api/auth",
+        secure=cookie_params["secure"],
+        samesite=cookie_params["samesite"]
+    )
+    response.delete_cookie(
+        key="cyberscout_csrf_token",
+        path="/",
+        secure=cookie_params["secure"],
+        samesite=cookie_params["samesite"]
+    )
     return {"success": True, "message": "Clearance session terminated."}
 
 # --- Enhanced Secure Endpoints for React Frontend ---
 
 @app.post("/api/fetch-url", dependencies=[Depends(scan_rate_limiter)])
 def api_fetch_url(data: URLRequest):
-    is_safe, reason = validate_safe_url(data.url)
+    is_safe, reason, _ = validate_safe_url(data.url)
     if not is_safe:
         raise HTTPException(status_code=400, detail=f"SSRF Security Violation: {reason}")
     html = fetch_live_html(data.url)
@@ -635,7 +687,7 @@ def api_fetch_url(data: URLRequest):
 def api_extract_url_signals(data: PredictionRequest):
     html = data.html
     if not html and data.url:
-        is_safe, reason = validate_safe_url(data.url)
+        is_safe, reason, _ = validate_safe_url(data.url)
         if not is_safe:
             raise HTTPException(status_code=400, detail=f"SSRF Security Violation: {reason}")
         html = fetch_live_html(data.url)
@@ -647,7 +699,7 @@ def api_extract_url_signals(data: PredictionRequest):
 def api_fetch_dom_tree(data: PredictionRequest):
     html = data.html
     if not html and data.url:
-        is_safe, reason = validate_safe_url(data.url)
+        is_safe, reason, _ = validate_safe_url(data.url)
         if not is_safe:
             raise HTTPException(status_code=400, detail=f"SSRF Security Violation: {reason}")
         html = fetch_live_html(data.url)
@@ -656,20 +708,23 @@ def api_fetch_dom_tree(data: PredictionRequest):
     return {"dom_tree": tree}
 
 @app.post("/api/analyze-url", dependencies=[Depends(scan_rate_limiter)])
-def api_analyze_url(data: PredictionRequest):
+def api_analyze_url(
+    data: PredictionRequest,
+    current_user: Optional[dict] = Depends(get_current_user_optional)
+):
     """
     Main Multi-Signal Analysis Flow:
-    1. SSRF validation & HTML Fetch
+    1. Anti-SSRF & DNS Rebinding validation & HTML Fetch
     2. ML Classification & Explainability (SHAP/LIME)
     3. Multi-Signal Threat Policy Evaluation (Decision 3)
     4. Auto-Blocklist only on Confirmed Malicious criteria
-    5. Audit logging in scan history
+    5. Audit logging in scan history (derives user_id from verified server-side user)
     """
     # 1. SSRF Validation
     html = data.html
     if data.url:
         needs_fetch = not html
-        is_safe, reason = validate_safe_url(data.url, skip_dns_check=not needs_fetch)
+        is_safe, reason, _ = validate_safe_url(data.url, skip_dns_check=not needs_fetch)
         if not is_safe:
             raise HTTPException(status_code=400, detail=f"SSRF Security Violation: {reason}")
 
@@ -703,79 +758,98 @@ def api_analyze_url(data: PredictionRequest):
         except Exception:
             pass
 
-    prediction, score, reasons = analyze_phishing(data.url, html)
+    # 5. Extract Feature Vector for URL ML model
+    features = extract_url_features(data.url)
+    features_df = pd.DataFrame([features]) if isinstance(features, dict) else features
     
-    # --- ML Integration & Explainability ---
-    ml_prediction = "Unknown"
-    ml_confidence = 0.0
+    # 6. ML Inference & Explainability
     explanation = {"top_features": []}
+    ml_confidence = 0.5
+    ml_prediction = "Unknown"
     
-    if model:
+    if model is not None and not features_df.empty:
         try:
-            feats = extract_url_features(data.url)
-            feature_order = ["url_length", "domain_length", "dot_count", "digit_count", "has_ip", "is_https", "susp_keywords"]
-            input_vector = [feats[f] for f in feature_order]
-            input_df = pd.DataFrame([input_vector], columns=feature_order)
-            
-            pred_class = model.predict(input_df)[0]
-            ml_prediction = "phishing" if pred_class == 1 else "legitimate"
-            probs = model.predict_proba(input_df)[0]
-            ml_confidence = float(probs[1]) if pred_class == 1 else float(probs[0])
-            
-            if explainer_shap:
-                shap_values = explainer_shap.shap_values(input_df)
-                if isinstance(shap_values, list):
-                    sv = shap_values[1][0]
-                elif len(np.array(shap_values).shape) == 3:
-                    sv = np.array(shap_values)[0, :, 1]
-                else:
-                    sv = np.array(shap_values)[0]
+            pred_idx = model.predict(features_df)[0]
+            ml_prediction = "Phishing" if pred_idx == 1 else "Legitimate"
+            probs = model.predict_proba(features_df)[0]
+            ml_confidence = float(probs[pred_idx])
 
-                feature_importance = zip(feature_order, sv)
-                sorted_features = sorted(feature_importance, key=lambda x: abs(x[1]), reverse=True)
+            # Generate SHAP explanation if available
+            if explainer_shap is not None:
+                shap_vals = explainer_shap.shap_values(features_df)
+                if isinstance(shap_vals, list):
+                    phish_shap = shap_vals[1][0] if len(shap_vals) > 1 else shap_vals[0][0]
+                elif hasattr(shap_vals, 'ndim') and shap_vals.ndim == 3:
+                    phish_shap = shap_vals[0, :, 1]
+                else:
+                    phish_shap = shap_vals[0]
+                
+                feat_importance = list(zip(features_df.columns, phish_shap))
+                feat_importance.sort(key=lambda x: abs(x[1]), reverse=True)
                 explanation["top_features"] = [
-                    f"{name}: {feats.get(name, 'N/A')} ({'Increases Risk' if val > 0 else 'Decreases Risk'})"
-                    for name, val in sorted_features[:3]
+                    {"feature": f, "impact": float(v)} for f, v in feat_importance[:5]
                 ]
         except Exception as e:
-            print(f"ML/Explainability Error: {e}")
+            print(f"Error during ML inference/SHAP: {e}")
 
-    # 5. Multi-Signal Threat Policy (Decision 3)
+    # 7. Evaluate Threat Policy (Decision 3: Multi-signal corroboration, never single-factor block)
+    url_score = 0
+    if ml_prediction == "Phishing":
+        url_score = int(ml_confidence * 75)
+    elif ml_prediction == "Legitimate":
+        url_score = int((1.0 - ml_confidence) * 40)
+    else:
+        url_score = simple_url_features(data.url) * 40
+
+    html_score = 0
+    html_reasons = []
+    if is_external_form:
+        html_score += 45
+        html_reasons.append("Form action submits to mismatched external domain (credential harvesting vector)")
+    if has_pwd and is_external_form:
+        html_score += 25
+        html_reasons.append("Password input detected with third-party target form action")
+
     policy = evaluate_threat_policy(
         url=data.url,
-        url_heuristic_score=score,
-        html_score=score,
-        html_reasons=reasons,
+        url_heuristic_score=url_score,
+        html_score=html_score,
+        html_reasons=html_reasons,
         ml_prediction=ml_prediction,
-        ml_confidence=ml_confidence,
-        has_password_field=has_pwd,
-        is_external_form_action=is_external_form,
-        manual_blocklist_match=manual_block
+        ml_confidence=ml_confidence if ml_prediction != "Unknown" else 0.5,
+        has_password_field=has_pwd
     )
 
     final_prediction = policy["prediction"]
     final_score = policy["risk_score"]
-    should_block = policy["should_block"]
-    combined_reasons = list(dict.fromkeys(reasons + policy["audit_reasons"]))
+    should_block = manual_block or (policy["action"] == PolicyAction.BLOCK)
 
-    # 6. Multi-Signal Auto Blocklist System
-    if should_block and blocklist_collection is not None:
+    # Auto-block ONLY when corroborated criteria for CONFIRMED_MALICIOUS are met
+    if should_block and blocklist_collection is not None and data.url:
         try:
-            if not blocklist_collection.find_one({"url": data.url}):
-                blocklist_collection.insert_one({
-                    "url": data.url,
-                    "risk_score": final_score,
-                    "risk_level": policy["risk_level"],
-                    "reasons": combined_reasons,
-                    "corroborating_signals": policy["corroborating_signals"],
-                    "blocked_by": "multi_signal_policy_v2",
-                    "timestamp": datetime.now(timezone.utc)
-                })
+            blocklist_collection.update_one(
+                {"url": data.url},
+                {
+                    "$set": {
+                        "url": data.url,
+                        "risk_score": final_score,
+                        "risk_level": policy["risk_level"],
+                        "reasons": policy["corroborating_signals"],
+                        "timestamp": datetime.now(timezone.utc),
+                        "auto_blocked": True
+                    }
+                },
+                upsert=True
+            )
         except Exception as e:
-            print(f"Failed to auto-block URL: {e}")
+            print(f"Failed to update blocklist: {e}")
 
-    log_to_db("url_analysis", data.url, final_prediction, final_score, combined_reasons, user_id=data.user_id)
-    
+    combined_reasons = list(set(policy["audit_reasons"] + html_reasons))
+
+    # Derive authenticated server-side user_id (never trust arbitrary client input)
+    authenticated_user_id = current_user["id"] if current_user else None
+    log_to_db("analyze_url", data.url, final_prediction, final_score, combined_reasons, user_id=authenticated_user_id)
+
     return {
         "url": data.url,
         "prediction": final_prediction.lower(),
@@ -792,11 +866,11 @@ def api_analyze_url(data: PredictionRequest):
     }
 
 # --- Real-Time Block Enforcement (Extension) ---
-@app.get("/api/check-blocked-url")
+@app.get("/api/check-blocked-url", dependencies=[Depends(scan_rate_limiter)])
 def check_blocked_url(url: str):
     """
     Check if a URL is in the blocklist.
-    Used by the browser extension for real-time enforcement.
+    Used by the browser extension for real-time enforcement with rate limiting.
     """
     if blocklist_collection is not None:
         found = blocklist_collection.find_one({"url": url})
@@ -808,9 +882,10 @@ def check_blocked_url(url: str):
             }
     return {"blocked": False}
 
-# --- Blocklist Management (Dashboard) ---
+# --- Blocklist Management (Authenticated Analysts & Admins) ---
 @app.get("/api/blocklist")
-def get_blocklist():
+def get_blocklist(current_user: dict = Depends(require_current_user)):
+    """Returns the list of blocked threats. Requires authenticated user."""
     if blocklist_collection is None:
         return []
     try:
@@ -826,8 +901,9 @@ def get_blocklist():
 @app.delete("/api/blocklist")
 def remove_from_blocklist(
     url: str,
-    user: dict = Depends(require_admin if REQUIRE_AUTH else get_current_user_optional)
+    current_user: dict = Depends(require_admin)
 ):
+    """Admin privilege required to remove a URL from the blocklist."""
     if blocklist_collection is not None:
         result = blocklist_collection.delete_one({"url": url})
         return {"success": result.deleted_count > 0}
@@ -836,13 +912,13 @@ def remove_from_blocklist(
 @app.post("/api/mark-safe")
 def mark_url_safe(
     url: str,
-    user: dict = Depends(require_admin if REQUIRE_AUTH else get_current_user_optional)
+    current_user: dict = Depends(require_admin)
 ):
     """Admin override to mark a URL as safe by removing it from blocklist."""
     if blocklist_collection is not None:
         blocklist_collection.delete_one({"url": url})
-        admin_info = user.get("email") if user else "administrator"
-        log_to_db("admin_override", url, "Legitimate", 0, [f"Marked safe by {admin_info} override"])
+        admin_info = current_user.get("email", "administrator")
+        log_to_db("admin_override", url, "Legitimate", 0, [f"Marked safe by {admin_info} override"], user_id=current_user["id"])
         return {"success": True}
     return {"error": "Database unavailable"}
 
@@ -854,10 +930,12 @@ def api_extract_email_signals(data: EmailRequest):
     return {"signals": signals}
 
 @app.post("/api/analyze-email", dependencies=[Depends(scan_rate_limiter)])
-def api_analyze_email(data: EmailRequest):
+def api_analyze_email(
+    data: EmailRequest,
+    current_user: Optional[dict] = Depends(get_current_user_optional)
+):
     if not ENABLE_EMAIL_ANALYSIS:
         raise HTTPException(status_code=403, detail="Email analysis feature is disabled")
-    # Pass the loaded ML model for more accurate detection
     prediction, score, reasons = analyze_email_phishing(data.email_text, ml_model=email_ml_model)
     
     risk_level = (
@@ -867,7 +945,8 @@ def api_analyze_email(data: EmailRequest):
         RiskLevel.CONFIRMED_MALICIOUS
     )
     
-    log_to_db("email_analysis", data.email_text[:500], prediction, score, reasons, user_id=data.user_id)
+    authenticated_user_id = current_user["id"] if current_user else None
+    log_to_db("email_analysis", data.email_text[:500], prediction, score, reasons, user_id=authenticated_user_id)
     return {
         "prediction": prediction,
         "risk_score": score,
@@ -876,7 +955,15 @@ def api_analyze_email(data: EmailRequest):
     }
 
 @app.get("/api/dashboard-stats")
-def get_dashboard_stats(user_id: str = None):
+def get_dashboard_stats(
+    user_id: Optional[str] = None,
+    current_user: dict = Depends(require_current_user)
+):
+    """
+    Returns telemetry stats for the dashboard.
+    Requires authentication.
+    Analysts see their personal stats; Admins can view all or filter by user_id.
+    """
     if history_collection is None:
         return {
             "total_scans": 0,
@@ -891,10 +978,16 @@ def get_dashboard_stats(user_id: str = None):
     try:
         from datetime import timedelta
         
-        # Build filter query
+        # Scans access control:
+        # Non-admin analysts are restricted to their own telemetry
+        if current_user.get("role") != "admin":
+            target_user_id = current_user["id"]
+        else:
+            target_user_id = user_id
+
         query = {}
-        if user_id:
-            query["user_id"] = user_id
+        if target_user_id:
+            query["user_id"] = str(target_user_id)
 
         total_scans = history_collection.count_documents(query)
         
@@ -914,11 +1007,11 @@ def get_dashboard_stats(user_id: str = None):
         url_query["type"] = "url_analysis"
         url_scans = history_collection.count_documents(url_query)
         
-        # Get 7-day activity aggregation
-        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+        # 7-day activity aggregation
+        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
         match_stage = {"timestamp": {"$gte": seven_days_ago}}
-        if user_id:
-            match_stage["user_id"] = user_id
+        if target_user_id:
+            match_stage["user_id"] = str(target_user_id)
             
         pipeline = [
             {"$match": match_stage},
@@ -930,11 +1023,10 @@ def get_dashboard_stats(user_id: str = None):
         ]
         weekly_activity = list(history_collection.aggregate(pipeline))
         
-        # Ensure we have data for all 7 days (even if 0)
         formatted_activity = []
         for i in range(7):
-            date = (datetime.utcnow() - timedelta(days=6-i)).strftime("%Y-%m-%d")
-            day_name = (datetime.utcnow() - timedelta(days=6-i)).strftime("%a")
+            date = (datetime.now(timezone.utc) - timedelta(days=6-i)).strftime("%Y-%m-%d")
+            day_name = (datetime.now(timezone.utc) - timedelta(days=6-i)).strftime("%a")
             count = next((item['count'] for item in weekly_activity if item['_id'] == date), 0)
             formatted_activity.append({"day": day_name, "date": date, "count": count})
 
@@ -942,7 +1034,7 @@ def get_dashboard_stats(user_id: str = None):
         recent_scans_cursor = history_collection.find(query).sort("timestamp", -1).limit(10)
         recent_scans = []
         for scan in recent_scans_cursor:
-            scan["_id"] = str(scan["_id"])  # Convert ObjectId to string
+            scan["_id"] = str(scan["_id"])
             if "timestamp" in scan:
                  scan["timestamp"] = scan["timestamp"].isoformat()
             recent_scans.append(scan)
@@ -965,4 +1057,3 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", 8000))
     uvicorn.run("src.api_fastapi:app", host=host, port=port, reload=True)
-

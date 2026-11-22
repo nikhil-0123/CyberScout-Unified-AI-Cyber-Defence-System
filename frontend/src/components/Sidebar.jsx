@@ -1,6 +1,7 @@
 import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { logoutUser } from '../utils/api';
 import {
     LayoutDashboard,
     Link as LinkIcon,
@@ -17,11 +18,8 @@ import {
 const Sidebar = ({ isOpen, toggleSidebar }) => {
     const navigate = useNavigate();
 
-    const handleLogout = () => {
-        localStorage.removeItem('cyberscout_access_token');
-        localStorage.removeItem('cyberscout_refresh_token');
-        localStorage.removeItem('cyberscout_currentUser');
-        localStorage.removeItem('phishguard_currentUser');
+    const handleLogout = async () => {
+        await logoutUser();
         navigate('/login');
     };
 
