@@ -3,21 +3,17 @@ import re
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 import tldextract
+from .security.ssrf import safe_fetch_html, validate_safe_url
 
 def fetch_live_html(url):
     """
-    Fetches the live HTML source of a URL.
-    Implements proper error handling for unreachable or fake websites.
+    Safely fetches the live HTML source of a URL with SSRF protection,
+    timeout management, and memory size boundaries.
     """
-    try:
-        response = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        response.raise_for_status()
-        return response.text
-    except (requests.exceptions.RequestException, requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-        # Return a clear, user-friendly message instead of crashing
-        return "Unable to fetch HTML. Website may be unreachable or fake."
-    except Exception as e:
-        return f"Error: {str(e)}"
+    html, error = safe_fetch_html(url)
+    if error:
+        return f"Error: {error}"
+    return html
 
 def extract_suspicious_snippets(html):
     """Extracts important/suspicious parts of the HTML."""

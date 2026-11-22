@@ -9,10 +9,28 @@ const api = axios.create({
     },
 });
 
+// Attach Authorization Bearer token automatically if authenticated
+api.interceptors.request.use((config) => {
+    const token = localStorage.getItem('cyberscout_access_token') || localStorage.getItem('phishguard_access_token');
+    if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+}, (error) => Promise.reject(error));
+
+// Security & Authentication API (Phase 2)
+export const registerUser = (name, email, password) => api.post('/api/auth/register', { name, email, password });
+export const loginUser = (email, password) => api.post('/api/auth/login', { email, password });
+export const getCurrentUser = () => api.get('/api/auth/me');
+export const refreshAuthToken = (refreshToken) => api.post('/api/auth/refresh', { refresh_token: refreshToken });
+export const logoutUser = (refreshToken) => api.post('/api/auth/logout', { refresh_token: refreshToken });
+
+// URL & Forensic Analysis API
 export const fetchUrlHtml = (url) => api.post('/api/fetch-url', { url });
 export const extractUrlSignals = (url, html) => api.post('/api/extract-url-signals', { url, html });
 export const analyzeUrl = (url, html, user_id) => api.post('/api/analyze-url', { url, html, user_id });
 
+// Email Phishing Analysis API
 export const extractEmailSignals = (email_text) => api.post('/api/extract-email-signals', { email_text });
 export const analyzeEmail = (email_text, user_id) => api.post('/api/analyze-email', { email_text, user_id });
 export const fetchDashboardStats = (user_id) => api.get('/api/dashboard-stats', { params: { user_id } });
