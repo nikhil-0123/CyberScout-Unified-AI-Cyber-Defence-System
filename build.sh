@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Render build script
+# Render & CI build script for CyberScout backend
 
 set -o errexit
 
-pip install --upgrade pip
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 
-echo "Build completed successfully!"
+echo "CyberScout Backend build completed successfully!"

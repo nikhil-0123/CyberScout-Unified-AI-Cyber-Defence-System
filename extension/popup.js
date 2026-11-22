@@ -14,17 +14,17 @@ document.getElementById("checkBtn").addEventListener("click", async () => {
 
     try {
         // First check if API is running
-        let healthCheck = await fetch("http://localhost:5000/", {
+        let healthCheck = await fetch("http://localhost:8000/", {
             method: "GET"
         }).catch(() => null);
 
         if (!healthCheck) {
-            resultDiv.innerText = "Error: API server is not running. Start it with: uvicorn src.api_fastapi:app --reload --port 5000";
+            resultDiv.innerText = "Error: API server is not running. Start it with: uvicorn src.api_fastapi:app --reload --port 8000";
             resultDiv.style.color = "red";
             return;
         }
 
-        let response = await fetch("http://localhost:5000/predict", {
+        let response = await fetch("http://localhost:8000/predict", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -53,7 +53,7 @@ document.getElementById("checkBtn").addEventListener("click", async () => {
         }
     } catch (err) {
         console.error(err);
-        resultDiv.innerText = "Error: " + err.message + "\n\nMake sure the API server is running:\nuvicorn src.api_fastapi:app --reload --port 5000";
+        resultDiv.innerText = "Error: " + err.message + "\n\nMake sure the API server is running:\nuvicorn src.api_fastapi:app --reload --port 8000";
         resultDiv.style.color = "red";
     }
 });

@@ -22,9 +22,16 @@ from .analysis_engine import (
     extract_email_signals, analyze_email_phishing, extract_dom_tree
 )
 from .feature_url import extract_url_features
-import shap
-import lime
-import lime.lime_tabular
+try:
+    import shap
+except Exception as e:
+    shap = None
+
+try:
+    import lime
+    import lime.lime_tabular
+except Exception as e:
+    lime = None
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -40,7 +47,6 @@ app.add_middleware(
 )
 
 # --- MongoDB Configuration ---
-# MONGO_URI = "mongodb+srv://punamproject:punamproject%40123@road2tech.vajimqu.mongodb.net/?appName=road2tech"
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
 try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
@@ -110,24 +116,25 @@ if os.path.exists(model_path):
             
             # Initialize explainers
             # SHAP
-            explainer_shap = shap.TreeExplainer(model)
+            if shap is not None and hasattr(shap, "TreeExplainer"):
+                explainer_shap = shap.TreeExplainer(model)
             
             # LIME
             feature_names = ["url_length", "domain_length", "dot_count", "digit_count", "has_ip", "is_https", "susp_keywords"]
-            # Convert background data to numpy for LIME
-            if hasattr(background_data, 'values'):
-                bg_values = background_data.values
-            else:
-                bg_values = background_data
-                
-            explainer_lime = lime.lime_tabular.LimeTabularExplainer(
-                bg_values,
-                mode='classification',
-                feature_names=feature_names,
-                class_names=['Legitimate', 'Phishing'],
-                discretize_continuous=True
-            )
-            print("Explainable AI engines (SHAP/LIME) initialized.")
+            if lime is not None and hasattr(lime, "lime_tabular"):
+                if hasattr(background_data, 'values'):
+                    bg_values = background_data.values
+                else:
+                    bg_values = background_data
+                    
+                explainer_lime = lime.lime_tabular.LimeTabularExplainer(
+                    bg_values,
+                    mode='classification',
+                    feature_names=feature_names,
+                    class_names=['Legitimate', 'Phishing'],
+                    discretize_continuous=True
+                )
+            print("Explainable AI engines checked.")
     except Exception as e:
         print(f"Failed to load ML artifacts: {e}")
         model = None
@@ -655,3 +662,10 @@ def get_dashboard_stats(user_id: str = None):
     except Exception as e:
         print(f"Error fetching stats: {e}")
         return {"error": str(e)}
+
+if __name__ == "__main__":
+    import uvicorn
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("src.api_fastapi:app", host=host, port=port, reload=True)
+

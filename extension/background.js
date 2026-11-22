@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:5000";
+const API_BASE = "http://localhost:8000";
 
 // Listen for navigation events to enforce real-time blocking
 chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
