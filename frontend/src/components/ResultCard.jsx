@@ -1,10 +1,25 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { ShieldCheck, ShieldAlert, AlertTriangle, ListChecks } from 'lucide-react';
+import { ShieldCheck, ShieldAlert, AlertTriangle, ListChecks, CheckCircle2, Shield } from 'lucide-react';
 
-const ResultCard = ({ prediction, score, risk_score, reasons, explanation }) => {
+const ResultCard = ({ prediction, score, risk_score, risk_level, reasons, explanation, is_trusted_domain, corroborating_signals, action }) => {
     const isPhishing = prediction?.toLowerCase() === 'phishing';
     const displayScore = risk_score !== undefined ? risk_score : score;
+
+    const getTierColor = (tier) => {
+        switch (tier?.toUpperCase()) {
+            case 'LOW':
+                return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40';
+            case 'MEDIUM':
+                return 'bg-amber-500/20 text-amber-400 border-amber-500/40';
+            case 'HIGH':
+                return 'bg-orange-500/20 text-orange-400 border-orange-500/40';
+            case 'CONFIRMED_MALICIOUS':
+                return 'bg-rose-500/20 text-rose-400 border-rose-500/40';
+            default:
+                return isPhishing ? 'bg-rose-500/20 text-rose-400 border-rose-500/40' : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40';
+        }
+    };
 
     return (
         <motion.div
@@ -16,7 +31,7 @@ const ResultCard = ({ prediction, score, risk_score, reasons, explanation }) => 
             <div className={`absolute top-0 right-0 w-80 h-80 blur-[120px] rounded-full pointer-events-none -mr-40 -mt-40 ${isPhishing ? 'bg-rose-500/10' : 'bg-emerald-500/10'}`}></div>
 
             <div className="flex flex-col lg:flex-row items-center lg:items-start gap-16 relative z-10">
-                <div className="flex flex-col items-center gap-10 text-center shrink-0">
+                <div className="flex flex-col items-center gap-6 text-center shrink-0">
                     <div className={`w-36 h-36 rounded-[3rem] flex items-center justify-center glass-card border-white/5 shadow-2xl relative group ${isPhishing ? 'text-rose-400' : 'text-emerald-400'}`}>
                         {/* Recursive border glow */}
                         <div className={`absolute inset-0 rounded-[3rem] blur-xl opacity-20 group-hover:opacity-40 transition-opacity ${isPhishing ? 'bg-rose-500' : 'bg-emerald-500'}`}></div>
@@ -27,16 +42,27 @@ const ResultCard = ({ prediction, score, risk_score, reasons, explanation }) => 
                             <ShieldCheck className="w-20 h-20 relative z-10" />
                         )}
                     </div>
-                    <div>
+                    <div className="space-y-3">
                         <motion.span 
                             initial={{ opacity: 0, y: 10 }}
                             animate={{ opacity: 1, y: 0 }}
-                            className={`inline-block px-10 py-3 rounded-2xl text-[10px] font-black uppercase tracking-[0.4em] shadow-2xl border transition-all ${isPhishing 
+                            className={`inline-block px-8 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-[0.4em] shadow-2xl border transition-all ${isPhishing 
                                 ? 'bg-rose-600 border-rose-500 text-white shadow-rose-900/40' 
                                 : 'bg-emerald-600 border-emerald-500 text-white shadow-emerald-900/40'}`}
                         >
                             {prediction} DETECTED
                         </motion.span>
+                        {risk_level && (
+                            <div className={`px-4 py-1.5 rounded-xl border text-[9px] font-black uppercase tracking-widest ${getTierColor(risk_level)}`}>
+                                Tier: {risk_level}
+                            </div>
+                        )}
+                        {is_trusted_domain && (
+                            <div className="px-4 py-1.5 rounded-xl border bg-emerald-500/10 border-emerald-500/30 text-emerald-400 text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-1.5">
+                                <Shield className="w-3.5 h-3.5" />
+                                Verified Trusted
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -58,6 +84,24 @@ const ResultCard = ({ prediction, score, risk_score, reasons, explanation }) => 
                             />
                         </div>
                     </div>
+
+                    {/* Corroborating Signals (Decision 3 Policy) */}
+                    {corroborating_signals && corroborating_signals.length > 0 && (
+                        <div className="space-y-4">
+                            <h4 className="text-slate-400 text-[10px] font-black flex items-center gap-3 uppercase tracking-[0.4em]">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                                Multi-Signal Policy Corroboration
+                            </h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-white">
+                                {corroborating_signals.map((sig, idx) => (
+                                    <div key={idx} className="p-4 glass-card border-white/10 rounded-2xl text-xs font-semibold text-slate-200 flex items-start gap-3">
+                                        <div className="w-2 h-2 rounded-full bg-emerald-400 shrink-0 mt-1 shadow-[0_0_8px_#34d399]" />
+                                        <span>{sig}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
 
                     <div className="space-y-6">
                         <h4 className="text-slate-500 text-[10px] font-black flex items-center gap-3 uppercase tracking-[0.4em]">

@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Link, useNavigate } from 'react-router-dom';
 import { Shield, Mail, Lock, ArrowRight, AlertCircle } from 'lucide-react';
 import Navbar from '../components/Navbar';
+import { loginUser } from '../utils/api';
 
 const Login = () => {
     const navigate = useNavigate();
@@ -10,28 +11,27 @@ const Login = () => {
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError('');
 
-        setTimeout(() => {
-            try {
-                const existingUsers = JSON.parse(localStorage.getItem('phishguard_users') || '[]');
-                const user = existingUsers.find(u => u.email === formData.email && u.password === formData.password);
+        try {
+            const res = await loginUser(formData.email, formData.password);
+            const { access_token, refresh_token, user } = res.data;
 
-                if (user) {
-                    localStorage.setItem('phishguard_currentUser', JSON.stringify(user));
-                    navigate('/dashboard');
-                } else {
-                    setError('Access Denied. Invalid security credentials.');
-                }
-            } catch (err) {
-                setError('Authentication failed. Core system error.');
-            } finally {
-                setLoading(false);
-            }
-        }, 1200);
+            localStorage.setItem('cyberscout_access_token', access_token);
+            localStorage.setItem('cyberscout_refresh_token', refresh_token);
+            localStorage.setItem('cyberscout_currentUser', JSON.stringify(user));
+            localStorage.setItem('phishguard_currentUser', JSON.stringify(user));
+
+            navigate('/dashboard');
+        } catch (err) {
+            const detail = err.response?.data?.detail;
+            setError(detail || 'Access Denied. Invalid security credentials or server offline.');
+        } finally {
+            setLoading(false);
+        }
     };
 
     return (

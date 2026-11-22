@@ -35,7 +35,7 @@ const DashboardHome = () => {
 
     const loadStats = async () => {
         try {
-            const currentUser = JSON.parse(localStorage.getItem('phishguard_currentUser') || '{}');
+            const currentUser = JSON.parse(localStorage.getItem('cyberscout_currentUser') || localStorage.getItem('phishguard_currentUser') || '{}');
             setUser(currentUser);
 
             const res = await fetchDashboardStats(currentUser.id);

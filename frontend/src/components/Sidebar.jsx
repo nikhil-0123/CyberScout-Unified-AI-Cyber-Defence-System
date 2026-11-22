@@ -7,7 +7,9 @@ import {
     Mail,
     ShieldAlert,
     LogOut,
-
+    KeyRound,
+    Link2,
+    BookOpen,
     X,
     Shield
 } from 'lucide-react';
@@ -16,16 +18,22 @@ const Sidebar = ({ isOpen, toggleSidebar }) => {
     const navigate = useNavigate();
 
     const handleLogout = () => {
+        localStorage.removeItem('cyberscout_access_token');
+        localStorage.removeItem('cyberscout_refresh_token');
+        localStorage.removeItem('cyberscout_currentUser');
         localStorage.removeItem('phishguard_currentUser');
-        navigate('/');
+        navigate('/login');
     };
 
     const enableEmailAnalysis = import.meta.env.VITE_ENABLE_EMAIL_ANALYSIS !== 'false';
 
     const navItems = [
         { name: 'Dashboard', icon: LayoutDashboard, path: '/dashboard' },
-        { name: 'URL Analysis', icon: LinkIcon, path: '/dashboard/url' },
+        { name: 'URL Forensics', icon: LinkIcon, path: '/dashboard/url' },
         ...(enableEmailAnalysis ? [{ name: 'Email Analysis', icon: Mail, path: '/dashboard/email' }] : []),
+        { name: 'Password Security', icon: KeyRound, path: '/dashboard/password' },
+        { name: 'Link Safety', icon: Link2, path: '/dashboard/link-safety' },
+        { name: 'Security Awareness', icon: BookOpen, path: '/dashboard/awareness' },
         { name: 'Blocked Registry', icon: ShieldAlert, path: '/dashboard/blocked' },
     ];
 
@@ -46,12 +54,15 @@ const Sidebar = ({ isOpen, toggleSidebar }) => {
             `}>
                 <div className="flex flex-col h-full p-8">
                     {/* Brand Header */}
-                    <div className="flex items-center justify-between mb-12">
+                    <div className="flex items-center justify-between mb-8">
                         <div className="flex items-center gap-3 group cursor-pointer" onClick={() => navigate('/')}>
                             <div className="p-2.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 group-hover:rotate-12 transition-transform">
                                 <Shield className="w-6 h-6 text-emerald-400 group-hover:fill-emerald-400/10" />
                             </div>
-                            <span className="text-xl font-black text-white tracking-widest uppercase">PhishGuard</span>
+                            <div>
+                                <span className="text-xl font-black text-white tracking-widest uppercase block leading-none">CyberScout</span>
+                                <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">PhishGuard Pro</span>
+                            </div>
                         </div>
                         <button
                             onClick={toggleSidebar}
@@ -62,7 +73,7 @@ const Sidebar = ({ isOpen, toggleSidebar }) => {
                     </div>
 
                     {/* Navigation */}
-                    <nav className="flex-1 space-y-3">
+                    <nav className="flex-1 space-y-2 overflow-y-auto pr-1">
                         {navItems.map((item) => (
                             <NavLink
                                 key={item.path}

@@ -54,7 +54,7 @@ const UrlAnalysis = () => {
             setSnippets(signalsRes.data.snippets);
             setDomTree(domRes.data.dom_tree);
 
-            const user = JSON.parse(localStorage.getItem('phishguard_currentUser') || '{}');
+            const user = JSON.parse(localStorage.getItem('cyberscout_currentUser') || localStorage.getItem('phishguard_currentUser') || '{}');
             const analysisRes = await analyzeUrl(url, html, user.id);
             setResults(analysisRes.data);
             setStep(2);

@@ -388,10 +388,9 @@ def root():
 @app.post("/predict", dependencies=[Depends(scan_rate_limiter)])
 def predict(data: PredictionRequest):
     try:
-        # SSRF Protection
+        # SSRF Protection (inspect scheme and forbidden IP literals)
         if data.url:
-            needs_fetch = not data.html
-            is_safe, ssrf_reason = validate_safe_url(data.url, skip_dns_check=not needs_fetch)
+            is_safe, ssrf_reason = validate_safe_url(data.url, skip_dns_check=True)
             if not is_safe:
                 raise HTTPException(status_code=400, detail=f"SSRF Security Violation: {ssrf_reason}")
 
@@ -854,16 +853,25 @@ def api_extract_email_signals(data: EmailRequest):
     signals = extract_email_signals(data.email_text)
     return {"signals": signals}
 
-@app.post("/api/analyze-email")
+@app.post("/api/analyze-email", dependencies=[Depends(scan_rate_limiter)])
 def api_analyze_email(data: EmailRequest):
     if not ENABLE_EMAIL_ANALYSIS:
         raise HTTPException(status_code=403, detail="Email analysis feature is disabled")
     # Pass the loaded ML model for more accurate detection
     prediction, score, reasons = analyze_email_phishing(data.email_text, ml_model=email_ml_model)
+    
+    risk_level = (
+        RiskLevel.LOW if score < 40 else
+        RiskLevel.MEDIUM if score < 70 else
+        RiskLevel.HIGH if score < 90 else
+        RiskLevel.CONFIRMED_MALICIOUS
+    )
+    
     log_to_db("email_analysis", data.email_text[:500], prediction, score, reasons, user_id=data.user_id)
     return {
         "prediction": prediction,
         "risk_score": score,
+        "risk_level": risk_level,
         "reasons": reasons
     }
 

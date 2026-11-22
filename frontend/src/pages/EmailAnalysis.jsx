@@ -20,7 +20,7 @@ const EmailAnalysis = () => {
         setResults(null);
 
         try {
-            const user = JSON.parse(localStorage.getItem('phishguard_currentUser') || '{}');
+            const user = JSON.parse(localStorage.getItem('cyberscout_currentUser') || localStorage.getItem('phishguard_currentUser') || '{}');
             const res = await analyzeEmail(emailText, user.id);
             setResults(res.data);
         } catch (err) {

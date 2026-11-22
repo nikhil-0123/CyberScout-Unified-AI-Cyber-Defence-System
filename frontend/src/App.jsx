@@ -11,6 +11,10 @@ import DashboardHome from './pages/DashboardHome';
 import UrlAnalysis from './pages/UrlAnalysis';
 import EmailAnalysis from './pages/EmailAnalysis';
 import BlockedUrls from './pages/BlockedUrls';
+import PasswordSecurity from './pages/PasswordSecurity';
+import LinkSafety from './pages/LinkSafety';
+import SecurityAwareness from './pages/SecurityAwareness';
+import ProtectedRoute from './components/ProtectedRoute';
 
 function App() {
   return (
@@ -23,13 +27,23 @@ function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
 
-      {/* Dashboard Routes (Protected in a real app) */}
-      <Route path="/dashboard" element={<DashboardLayout />}>
+      {/* CyberScout Authenticated Dashboard Routes */}
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute>
+            <DashboardLayout />
+          </ProtectedRoute>
+        }
+      >
         <Route index element={<DashboardHome />} />
         <Route path="url" element={<UrlAnalysis />} />
         {import.meta.env.VITE_ENABLE_EMAIL_ANALYSIS !== 'false' && (
           <Route path="email" element={<EmailAnalysis />} />
         )}
+        <Route path="password" element={<PasswordSecurity />} />
+        <Route path="link-safety" element={<LinkSafety />} />
+        <Route path="awareness" element={<SecurityAwareness />} />
         <Route path="blocked" element={<BlockedUrls />} />
       </Route>
 

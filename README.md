@@ -1,127 +1,160 @@
-# 🛡️ PhishGuard Pro: Advanced Emerald Phishing Detection System
+# 🛡️ CyberScout – Unified AI Cyber Defence System
+*(Formerly PhishGuard Pro – Upgraded for PromptWars × Techverse Solutions Defence & Security Challenge)*
 
-PhishGuard Pro is a premium, production-ready phishing detection system featuring a **Cyber Emerald & Obsidian** aesthetic. It leverages **Multi-Modal Machine Learning** and **Heuristic Analysis** to identify threats across URLs and Email content. It features a live-updating dashboard with 7-day trend analysis, a robust FastAPI backend, and an explainable analysis engine.
+CyberScout is an integrated, production-oriented AI Cyber Defence Platform designed to protect individuals and organizations against phishing websites, email scams, malicious links, and compromised credentials.
 
----
-
-## 🚀 Key Features
-
-### 💎 NEW: Premium UI Overhaul
-- **Split Layout Auth**: Side-by-side Layout for Login/Register with animated branding and responsive mobile stacking.
-- **Glassmorphism Dashboard**: Fully redesigned Dashboard with "Cyber Emerald" glow effects, hero welcome section, and glass-panel stat cards.
-- **Responsive Sidebar**: Collapsible navigation with mobile toggle support.
-
-### 📊 Live "Cyber Emerald" Dashboard
-- **Dynamic Monitoring**: Real-time stats for Total Scans, Phishing Detections, and Legitimate hits.
-- **7-Day Analysis Feed**: Visual bar charts tracking scan activity over the past week.
-- **Auto-Syncing Registry**: A live-updating list (every 10 seconds) of the most recent analysis results.
-
-### 🛡️ Analysis Engine
-- **Direct Email Analysis**: Streamlined "Paste-and-Check" flow for immediate phishing classification.
-- **URL Multi-Modal Scan**: Heuristic analysis of domain patterns, TLDs, and live HTML source code.
-- **Explainable Results (XAI)**: Detailed risk scores (0-100%) with **Live Factor Values** (e.g., actual Digit Count, URL Length) powered by SHAP & LIME.
-- **Live DOM Tree Hierarchy**: Interactive, hierarchical visualization of the website's structure to detect hidden elements.
-- **ML & Heuristics**: Hybrid approach using Random Forest models and custom behavioral rules.
-- **🧩 Browser Extension**: Real-time enforcement that blocks malicious URLs before page load.
-
-### ⚙️ Backend & Resilience
-- **FastAPI Core**: High-performance, asynchronous REST API.
-- **MongoDB Support**: Integrated with MongoDB (Local or Atlas) for persistent scan history.
-- **Secure Configuration**: Environment variable support via `.env`.
+Built on a hardened **FastAPI** backend, **React 19 + Vite** frontend, and **MongoDB** telemetry store, CyberScout unites pre-trained machine learning classifiers with explainable AI (XAI), SSRF-protected link inspection, Argon2id authentication, and real-time browser extension enforcement.
 
 ---
 
-## 🛠️ Tech Stack
+## 🏛️ System Architecture
 
-- **Frontend**: React 19, Vite, Tailwind CSS, Framer Motion, Axios, **Recharts** (Visualizations).
-- **Backend**: Python 3.11+, FastAPI, Uvicorn, Pymongo, Python-Dotenv.
-- **Data/ML**: Scikit-learn, joblib, BeautifulSoup4, TLDextract.
-- **Database**: MongoDB.
-
----
-
-## 📁 Project Structure
-
-```text
-phishing-detector/
-├── frontend/               # React 19 Application
-│   ├── src/
-│   │   ├── components/     # StatCards, Sidebar, DomTreeView, ResultCards
-│   │   ├── layouts/        # DashboardLayout (Sidebar + Mobile Toggle)
-│   │   ├── pages/          # DashboardHome, BlockedUrls, Login, Register, Analysis
-│   │   └── utils/          # Live API services (Axios)
-│   └── ...
-├── extension/              # Browser Extension (Real-time Blocking)
-├── src/                    # Backend Source
-│   ├── api_fastapi.py      # Dashboard Stats API & Routing
-│   ├── analysis_engine.py  # Hybrid Detection Logic
-│   └── ...
-├── model/                  # Pretrained ML Models (.pkl)
-├── .env                    # Environment Variables
-├── requirements.txt        # Python Dependencies
-└── README.md
+```
+                                 ┌────────────────────────────────────────────────────────┐
+                                 │                   Client Layer                         │
+                                 │  • React 19 + Vite Web Application                     │
+                                 │  • Real-Time Chromium Browser Extension                │
+                                 └───────────┬────────────────────────────────┬───────────┘
+                                             │ HTTP/REST                      │ Chrome API
+                                             ▼                                ▼
+                                 ┌────────────────────────────────────────────────────────┐
+                                 │              FastAPI Security Gateway                  │
+                                 │  • Sliding-Window Rate Limiter (Brute-Force Defense)   │
+                                 │  • RFC 9106 Argon2id Password Hasher                   │
+                                 │  • RFC 7519 JWT Access & Refresh Token Rotation        │
+                                 │  • Exact Origin CORS Enforcement                       │
+                                 └───────────┬────────────────────────────────┬───────────┘
+                                             │                                │
+                     ┌───────────────────────┴──────────────┐                 │
+                     ▼                                      ▼                 ▼
+  ┌──────────────────────────────────────┐  ┌─────────────────────────┐  ┌──────────────┐
+  │         Detection & ML Core          │  │  SSRF & Forensics Guard │  │  Data Store  │
+  │ • URL Classifier (Random Forest)     │  │ • Pre-flight DNS Checks │  │ • MongoDB    │
+  │ • Email NLP Model (Pre-trained)      │  │ • RFC 1918 Private IP   │  │   - Users    │
+  │ • Explainable AI (SHAP / LIME)       │  │ • 5 MB Stream Boundary  │  │   - History  │
+  │ • Multi-Signal Threat Policy         │  │ • Redirect Inspection   │  │   - Blocks   │
+  │ • Trusted Domain Allowlist           │  │ • DOM Structural Tree   │  └──────────────┘
+  └──────────────────────────────────────┘  └─────────────────────────┘
 ```
 
 ---
 
-## ⚙️ Quick Start
+## 🌟 Key Defensive Modules
 
-### 1. Backend Setup
+### 1. Website Intelligence & URL Forensics
+- **Multi-Modal Detection**: Combines a trained Random Forest lexical classifier with heuristic inspection and DOM structure analysis.
+- **Explainable AI (XAI)**: Generates human-understandable SHAP/LIME feature importance breakdowns explaining why a website is flagged.
+- **Decision 3 Multi-Signal Policy**: Replaces crude single-signal password field blocking. Auto-blocking requires confirmed malicious scores ($\ge 90$) with multi-signal corroboration.
+- **Trusted Domain Allowlist**: Verified legitimate authentication portals (Google, GitHub, Microsoft, Apple, Amazon, Banking) are protected from false-positive blocks.
+
+### 2. Scam & Phishing Email Intelligence
+- **Behavioral NLP ML Engine**: Analyzes incoming emails, SMS messages, and raw text for psychological urgency, brand impersonation, and fraudulent payment prompts.
+- **Risk Tier Mapping**: Classifies threats into `LOW`, `MEDIUM`, `HIGH`, and `CONFIRMED_MALICIOUS`.
+- **Signal Extraction**: Isolates extracted links, generic greetings, and sensitive data requests.
+
+### 3. Link Safety & SSRF Neutralization
+- **Strict Network Boundary**: Validates all outbound analysis requests against loopback (`127.0.0.1`), cloud metadata (`169.254.169.254`), private IP subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), and non-HTTP protocols.
+- **Redirect Validation**: Validates every redirect target (up to 5 hops) before following to prevent DNS rebinding.
+- **Streaming Limit**: Limits downloads to 5 MB to prevent compression bomb denial-of-service.
+
+### 4. Client-Side Password Security Intelligence
+- **Zero-Knowledge Evaluation**: Password strength and mathematical Shannon entropy are computed 100% in the client browser. Plaintext credentials are **never** transmitted, hashed, or stored externally.
+- **Pattern & Dictionary Auditing**: Detects sequences, repeated characters, and common passwords.
+- **Offline GPU Crack Time Estimation**: Models brute-force resilience against 100-billion-guesses/sec clusters.
+- **High-Entropy Passphrase Generator**: One-click generation of strong cryptographic multi-word passphrases.
+
+### 5. Enterprise Authentication & Access Control
+- **Argon2id Hashing**: Uses RFC 9106 recommended parameters (64 MiB memory, 3 iterations, 4 parallelism lanes).
+- **Session Management**: 15-minute JWT access tokens paired with rotating 7-day cryptographic refresh tokens.
+- **Role-Based Access Control (RBAC)**: Distinguishes `admin` and `analyst` clearance levels for registry management and override capabilities.
+
+### 6. Real-Time Browser Extension
+- **Pre-Navigation Interception**: Chrome extension monitors web navigation events via `webNavigation.onBeforeNavigate`.
+- **Immediate Threat Quarantine**: Diverts navigation away from confirmed malicious domains to a secure warning blockpage.
+
+---
+
+## 🛠️ Technology Stack
+
+| Component | Technology |
+| :--- | :--- |
+| **Frontend Framework** | React 19, Vite 6, Tailwind CSS |
+| **Animation & Charts** | Framer Motion, Recharts, Lucide Icons |
+| **Backend Framework** | Python 3.12, FastAPI, Uvicorn |
+| **Authentication & Crypto** | Argon2id (`argon2-cffi`), PyJWT (`pyjwt`) |
+| **Machine Learning** | Scikit-learn, Joblib, NumPy, Pandas, SHAP, LIME |
+| **Forensics & Parsing** | BeautifulSoup4, TLDextract, Requests |
+| **Database** | MongoDB (Pymongo) with in-memory resilient fallback |
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+- Python 3.10+
+- Node.js 18+ and npm
+- MongoDB service (optional; backend includes resilient simulated store if MongoDB is offline)
+
+### 1. Repository Setup
 ```bash
-# Clone the repository
-git clone https://github.com/road2tec/Phishing-Url-and-Spam-Email-Detection-.git
-cd Phishing-Url-and-Spam-Email-Detection-
+git clone https://github.com/nikhil-0123/CyberScout-Unified-AI-Cyber-Defence-System.git
+cd CyberScout-Unified-AI-Cyber-Defence-System
+```
 
-# Install dependencies
+### 2. Backend Installation & Startup
+```bash
+# Install Python dependencies
 pip install -r requirements.txt
 
-# Configure Environment
-# Create a .env file in the root directory:
-# MONGO_URI=mongodb://localhost:27017/  <-- Or your Cloud URI
+# Configure environment variables
+cp .env.example .env
 
-# Start the API (Port 5000)
-python -m uvicorn src.api_fastapi:app --reload --port 5000
+# Start FastAPI backend (Default Port: 8000)
+uvicorn src.api_fastapi:app --host 0.0.0.0 --port 8000 --reload
 ```
+The interactive API documentation is available at `http://localhost:8000/docs`.
 
-### 2. Frontend Setup
+### 3. Frontend Installation & Startup
 ```bash
-# Navigate to frontend
 cd frontend
 
-# Install dependencies
+# Install Node modules
 npm install
 
-# Run dev server
+# Start Vite development server (Default Port: 5173)
 npm run dev
 ```
-> Access the UI at: `http://localhost:5173`
+Open `http://localhost:5173` in your browser.
+
+### 4. Browser Extension Setup
+1. Open Google Chrome (or any Chromium browser) and navigate to `chrome://extensions`.
+2. Enable **Developer mode** (top-right toggle).
+3. Click **Load unpacked** and select the `extension/` directory.
+4. The CyberScout extension icon will appear in your browser toolbar.
 
 ---
 
-## 🛡️ Usage
+## 🔒 Security Policy & Limitations
 
-### 📊 Dashboard
-- Monitor threat levels and weekly activity trends automatically.
-- The "Recent Analysis Registry" updates in real-time as you scan.
-
-### 📧 Email Protection
-- Paste the full body of a suspicious email into the **Instant Email Analysis** module.
-- Click **Analyze Email Now** for a direct classification (Legitimate/Phishing) and risk score.
-
-### 🔗 URL Guard
-- Analyze websites by URL.
-- Inspect the **Live DOM Tree Structure** to find hidden malicious code.
-- View **XAI Factors** with actual counts (e.g., URL length, digit count) to understand why the AI flagged it.
-
-### 🛡️ Browser Extension
-- Real-time protection across the web.
-- Automatically blocks high-risk URLs registered in the system.
+- **False-Positive Philosophy**: CyberScout believes a password input form is standard for web applications and does not unilaterally indicate a malicious site. True blocking requires multi-signal corroboration.
+- **No Absolute Guarantee**: While CyberScout provides advanced heuristic and AI classification, no scanner can guarantee 100% detection of zero-day vulnerabilities or advanced social engineering.
+- **SSRF Boundary**: Internal network scanning and cloud instance metadata access are strictly blocked by design.
 
 ---
 
-## 👤 Author
-**road2tec**  
-Project Repository: [Phishing-Url-and-Spam-Email-Detection-](https://github.com/road2tec/Phishing-Url-and-Spam-Email-Detection-.git)
+## 🧪 Demonstration Workflow
+
+1. **Security Registration**: Navigate to `http://localhost:5173/register` and create an analyst profile using a strong password conforming to the security policy.
+2. **Dashboard Overview**: Explore live telemetry counters, weekly detection distribution charts, and the live forensic log.
+3. **URL Forensics**: Test a suspicious link in `URL Forensics`. Observe the SHAP lexical factor breakdown and DOM hierarchy mapping.
+4. **Link Safety Inspector**: Test `https://accounts.google.com` to observe the Verified Allowlist badge and false-positive prevention in action.
+5. **Email Intelligence**: Paste a deceptive email payload into `Email Analysis` to inspect behavioral urgency and sensitive data triggers.
+6. **Password Intelligence**: Open `Password Security` to evaluate password entropy and generate a cryptographic multi-word passphrase.
+7. **Threat Registry**: Review the active blocklist and exercise the administrator override mark-safe action.
 
 ---
-*Developed for advanced cybersecurity monitoring and threat intelligence.*
+
+## 📄 License & Attribution
+
+Developed by **Nikhil Chaugule** for the **PromptWars × Techverse Solutions Defence and Security Challenge**.  
+All code and trained models are provided for legitimate defense and educational cybersecurity research.

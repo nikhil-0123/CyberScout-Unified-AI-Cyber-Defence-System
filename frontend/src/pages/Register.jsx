@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Link, useNavigate } from 'react-router-dom';
 import { Shield, User, Mail, Lock, ArrowRight, AlertCircle } from 'lucide-react';
 import Navbar from '../components/Navbar';
+import { registerUser } from '../utils/api';
 
 const Register = () => {
     const navigate = useNavigate();
@@ -15,7 +16,7 @@ const Register = () => {
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError('');
@@ -26,34 +27,22 @@ const Register = () => {
             return;
         }
 
-        setTimeout(() => {
-            try {
-                const existingUsers = JSON.parse(localStorage.getItem('phishguard_users') || '[]');
+        try {
+            const res = await registerUser(formData.name, formData.email, formData.password);
+            const { access_token, refresh_token, user } = res.data;
 
-                if (existingUsers.some(u => u.email === formData.email)) {
-                    setError('Conflict Detected: Profile already exists in the registry.');
-                    setLoading(false);
-                    return;
-                }
+            localStorage.setItem('cyberscout_access_token', access_token);
+            localStorage.setItem('cyberscout_refresh_token', refresh_token);
+            localStorage.setItem('cyberscout_currentUser', JSON.stringify(user));
+            localStorage.setItem('phishguard_currentUser', JSON.stringify(user));
 
-                const newUser = {
-                    id: crypto.randomUUID(),
-                    name: formData.name,
-                    email: formData.email,
-                    password: formData.password
-                };
-
-                const updatedUsers = [...existingUsers, newUser];
-                localStorage.setItem('phishguard_users', JSON.stringify(updatedUsers));
-                localStorage.setItem('phishguard_currentUser', JSON.stringify(newUser));
-
-                navigate('/dashboard');
-            } catch (err) {
-                setError('Registration failed. Core system failure.');
-            } finally {
-                setLoading(false);
-            }
-        }, 1200);
+            navigate('/dashboard');
+        } catch (err) {
+            const detail = err.response?.data?.detail;
+            setError(detail || 'Registration failed. Password policy violation or duplicate user.');
+        } finally {
+            setLoading(false);
+        }
     };
 
     return (
