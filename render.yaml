@@ -10,4 +10,6 @@ services:
         value: 3.11.0
       - key: PORT
         value: 8000
+      - key: CORS_ORIGINS
+        value: https://cyberscout-gilt.vercel.app,https://cyberscout.pages.dev,http://localhost:5173
     healthCheckPath: /
